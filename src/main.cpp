@@ -8,8 +8,60 @@
 #include <utility>
 #include <vector>
 #include <iterator>
+#include <stdexcept>
 
 using namespace std;
+
+template <typename Iter, typename EIter>
+ostream& _print_helper(Iter iter, EIter eiter) {
+    while (iter != eiter) {
+        if (*iter == '$') {
+            ++iter;
+            if (*iter == 'E') {
+                cout << endl;
+            } else if (*iter == '$') {
+                cout << *iter;
+            } else if (*iter == '?') {
+                throw runtime_error("Not enough arguments!");
+            } else {
+                throw runtime_error("Invalid format specifier!");
+            }
+        } else if (*iter != '\0') {
+            cout << *iter;
+        }
+        ++iter;
+    }
+    return cout;
+}
+
+template <typename Iter, typename EIter, typename T, typename... Ts>
+ostream& _print_helper(Iter iter, EIter eiter, T const& head, Ts const&... tail) {
+    while (iter != eiter) {
+        if (*iter == '$') {
+            ++iter;
+            if (*iter == '?') {
+                cout << head;
+                ++iter;
+                return _print_helper(iter, eiter, tail...);
+            } else if (*iter == 'E') {
+                cout << endl;
+            } else if (*iter == '$') {
+                cout << *iter;
+            } else {
+                throw runtime_error("Invalid format specifier!");
+            }
+        } else if (*iter != '\0') {
+            cout << *iter;
+        }
+        ++iter;
+    }
+    throw runtime_error("Too many parameters!");
+}
+
+template <typename Str, typename... Ts>
+ostream& print(Str const& fmt, Ts const&... ts) {
+    return _print_helper(begin(fmt),end(fmt),ts...);
+}
 
 auto erase_remove_if = [](auto& container, auto&& pred) {
     return container.erase(
@@ -98,6 +150,12 @@ struct Board {
     BoardElem& operator[](Coord const& c) {
         return (*this)[c.r][c.c];
     }
+
+    bool in_bounds(Coord const& c) {
+        return (
+            c.r >= 0 && c.r < height &&
+            c.c >= 0 && c.c < width);
+    }
 };
 
 int main(int argc, char* argv[]) {
@@ -110,26 +168,27 @@ int main(int argc, char* argv[]) {
     vector<unique_ptr<AI>> ais;
     ais.reserve(4);
 
-    auto startlocs = array<Coord,4>{{
-        {0,0},
-        {0,9},
-        {9,0},
-        {9,9},
-    }};
-
     Board board (10,10);
     fill(begin(board.data),end(board.data),1);
 
+    auto startlocs = array<Coord,4>{{
+        {0,                          0},
+        {board.height-1, board.width-1},
+        {0,              board.width-1},
+        {board.height-1,             0},
+    }};
+
     for (int i=0; i<argc-1; ++i) {
         auto ptr = make_unique<AI>(i, argv[1+i]);
+        print("Added \"$?\" as Player $?$E", argv[1+i], ptr->id);
         board.players.push_back({ptr.get(),startlocs[i]});
         ais.push_back(move(ptr));
-        cout << "Added player (" << argv[1+i] << ")" << endl;
     }
 
     for (auto& p : board.players) {
         auto& out = p.ai->proc->writeIn;
         out << p.ai->id << endl;
+        out << board.height << " " << board.width << endl;
         for (int r=0; r<board.height; ++r) {
             for (int c=0; c<board.width; ++c) {
                 if (c>0) {
@@ -154,7 +213,7 @@ int main(int argc, char* argv[]) {
 
     while (board.players.size() > 1) {
         ++turn;
-        cout << "Turn " << turn << endl;
+        print("Turn $?$E", turn);
         for (auto& p : board.players) {
             auto& out = p.ai->proc->writeIn;
             for (auto& p2 : board.players) {
@@ -167,31 +226,43 @@ int main(int argc, char* argv[]) {
         for (auto& p : board.players) {
             auto& in = p.ai->proc->readOut;
             in >> move_dir;
-            cout << "Player " << p.ai->id << " moves '" << move_dir << "'" << endl;
-            p.move_to = move_dirs[move_dir] + p.coord;
+            print("Player $? moves $?...$E", p.ai->id, move_dir);
+            auto iter = move_dirs.find(move_dir);
+            if (iter == end(move_dirs)) {
+                print("Invalid move!$E");
+                print("  Player $? has been destroyed!$E", p.ai->id);
+                Poco::Process::requestTermination(p.ai->proc->handle.id());
+                board.dead_players.emplace_back(exchange(p.ai,nullptr));
+            } else {
+                p.move_to = iter->second + p.coord;
+            }
         }
         for (auto& p : board.players) {
             board[p.coord] -= 1;
             p.coord = p.move_to;
         }
         for (auto& p : board.players) {
-            if ((p.coord.r < 0 || p.coord.r >= 10
-                || p.coord.c < 0 || p.coord.c >= 10)
-            || board[p.coord] <= 0) {
-                cout << "Player " << p.ai->id << " died at {" << p.coord << "}" << endl;
-                Poco::Process::requestTermination(p.ai->proc->handle.id());
-                board.dead_players.emplace_back(exchange(p.ai,nullptr));
+            if (p.ai) {
+                if (!board.in_bounds(p.coord) || board[p.coord] <= 0) {
+                    print("Player $? died at {$?}$E", p.ai->id, p.coord);
+                    Poco::Process::requestTermination(p.ai->proc->handle.id());
+                    board.dead_players.emplace_back(exchange(p.ai,nullptr));
+                }
             }
         }
         auto is_dead = [](auto& p){return !bool(p.ai);};
         erase_remove_if(board.players, is_dead);
     }
 
-    cout << "GAME OVER" << endl;
-    cout << "Survivors:" << endl;
-    for (auto& p : board.players) {
-        cout << "    " << p.ai->name << endl;
-        Poco::Process::requestTermination(p.ai->proc->handle.id());
+    print("GAME OVER$E");
+    if (board.players.size() == 1) {
+        auto& p = board.players[0];
+        print("Winner: Player $? \"$?\"$E", p.ai->id, p.ai->name);
+    } else {
+        print("There were no survivors...$E");
     }
 
+    for (auto& p : board.players) {
+        Poco::Process::requestTermination(p.ai->proc->handle.id());
+    }
 }

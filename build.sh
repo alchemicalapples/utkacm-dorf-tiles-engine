@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -e
 
-export CXXFLAGS="-g -std=c++1y -I./poco/include"
+export CPPFLAGS="-I./poco/include -DPOCO_STATIC"
+export CXXFLAGS="-g -std=c++1y"
 export LDFLAGS="-static -L./poco/lib"
 export LDLIBS="-lPocoFoundation"
 respite
